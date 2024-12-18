@@ -7,3 +7,4 @@ scipy
 prettytable
 scikit-learn
 scikit-image
+numpy==1.26.4; python_version>="3.13"
