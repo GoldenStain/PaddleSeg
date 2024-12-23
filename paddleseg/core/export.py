@@ -16,7 +16,9 @@ import os
 import paddle
 import yaml
 import json
+import shutil
 from copy import deepcopy
+from packaging import version
 
 from paddleseg.cvlibs import Config, SegBuilder
 from paddleseg.utils import logger, utils
@@ -75,7 +77,6 @@ def export(args, model=None, save_dir=None, use_ema=False):
     else:
         inference_model_path = os.path.join(save_dir, save_name)
         yml_file = os.path.join(save_dir, yaml_name)
-    paddle.jit.save(model, inference_model_path)
 
     # save deploy.yaml
     val_dataset_cfg = cfg.val_dataset_cfg
@@ -118,8 +119,34 @@ def export(args, model=None, save_dir=None, use_ema=False):
     msg += str(yaml.dump(deploy_info))
     if use_fd_inference == False:
         logger.info(msg)
-
+    if not os.path.exists(os.path.dirname(yml_file)):
+        os.makedirs(os.path.dirname(yml_file))
     with open(yml_file, 'w') as file:
         yaml.dump(deploy_info, file)
+
+    paddle_version = version.parse(paddle.__version__)
+    if (paddle_version >= version.parse('3.0.0b2')
+            or paddle_version == version.parse('0.0.0')) and os.environ.get(
+                "FLAGS_enable_pir_api", None) not in ["0", "False"]:
+        save_path = os.path.dirname(inference_model_path)
+        for enable_pir in [True, False]:
+            if not enable_pir:
+                save_path_no_pir = os.path.join(save_path, save_name)
+                model.forward.rollback()
+                with paddle.pir_utils.OldIrGuard():
+                    model = paddle.jit.to_static(model, input_spec=input_spec)
+                    paddle.jit.save(model, save_path_no_pir)
+            else:
+                save_path_pir = os.path.join(
+                    os.path.dirname(save_path),
+                    f"{os.path.basename(save_path)}_pir", save_name)
+                paddle.jit.save(model, save_path_pir)
+                shutil.copy(
+                    yml_file,
+                    os.path.join(os.path.dirname(save_path_pir),
+                                 os.path.basename(yml_file)),
+                )
+    else:
+        paddle.jit.save(model, inference_model_path)
 
     logger.info(f'The inference model is saved in {save_dir}')
